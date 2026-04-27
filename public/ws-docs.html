@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Room — WebSocket API</title>
+  <style>
+    :root {
+      --bg: #0f0f11; --bg2: #18181c; --bg3: #222228;
+      --border: #2e2e38; --text: #e2e2f0; --muted: #888899;
+      --primary: #7c6af7; --green: #34d399; --yellow: #fbbf24;
+      --red: #f87171; --blue: #60a5fa; --radius: 10px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.6; }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Layout */
+    .layout { display: flex; min-height: 100vh; }
+    .sidebar { width: 260px; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border); padding: 24px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+    .content { flex: 1; padding: 48px 56px; max-width: 900px; }
+
+    /* Sidebar */
+    .sidebar-logo { padding: 0 20px 20px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+    .sidebar-logo h1 { font-size: 1rem; font-weight: 700; }
+    .sidebar-logo p { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+    .sidebar-section { padding: 8px 20px 4px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; color: var(--muted); text-transform: uppercase; }
+    .sidebar-link { display: block; padding: 6px 20px; font-size: 0.85rem; color: var(--muted); transition: color 0.15s, background 0.15s; border-left: 2px solid transparent; }
+    .sidebar-link:hover { color: var(--text); background: var(--bg3); text-decoration: none; }
+    .sidebar-link.active { color: var(--primary); border-left-color: var(--primary); background: rgba(124,106,247,0.08); }
+
+    /* Content */
+    h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 8px; padding-top: 48px; }
+    h2:first-child { padding-top: 0; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin: 28px 0 10px; color: var(--text); }
+    p { color: var(--muted); margin-bottom: 12px; }
+    .lead { font-size: 1rem; color: var(--text); }
+    hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+    /* Code */
+    pre { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; overflow-x: auto; font-size: 0.83rem; line-height: 1.7; margin: 10px 0 20px; }
+    code { font-family: 'SF Mono', 'Fira Code', monospace; }
+    .inline-code { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 0.82em; font-family: 'SF Mono', monospace; color: var(--primary); }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; }
+    .badge-c2s { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .badge-s2c { background: rgba(52,211,153,0.15); color: var(--green); }
+    .badge-event { background: rgba(251,191,36,0.15); color: var(--yellow); }
+
+    /* Message cards */
+    .msg-grid { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 24px; }
+    .msg-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .msg-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg3); cursor: pointer; user-select: none; }
+    .msg-header:hover { background: var(--border); }
+    .msg-type { font-family: 'SF Mono', monospace; font-size: 0.88rem; font-weight: 600; color: var(--text); }
+    .msg-desc { font-size: 0.82rem; color: var(--muted); flex: 1; }
+    .msg-body { padding: 0; }
+    .msg-body pre { margin: 0; border: none; border-radius: 0; background: var(--bg2); }
+    .msg-body.hidden { display: none; }
+    .chevron { color: var(--muted); font-size: 0.75rem; transition: transform 0.2s; }
+    .msg-card.open .chevron { transform: rotate(90deg); }
+
+    /* Event table */
+    .event-table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; font-size: 0.85rem; }
+    .event-table th { text-align: left; padding: 8px 12px; background: var(--bg3); border: 1px solid var(--border); color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .event-table td { padding: 9px 12px; border: 1px solid var(--border); vertical-align: top; }
+    .event-table tr:hover td { background: var(--bg3); }
+    .event-name { font-family: 'SF Mono', monospace; color: var(--yellow); font-size: 0.83rem; }
+    .event-payload { font-family: 'SF Mono', monospace; color: var(--muted); font-size: 0.8rem; }
+
+    /* Flow diagram */
+    .flow { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; margin: 12px 0 24px; font-family: 'SF Mono', monospace; font-size: 0.82rem; line-height: 2; }
+    .flow .c { color: var(--blue); }
+    .flow .s { color: var(--green); }
+    .flow .arrow { color: var(--muted); }
+    .flow .note { color: var(--muted); font-style: italic; }
+
+    /* Connection box */
+    .conn-box { background: var(--bg2); border: 1px solid var(--primary); border-radius: var(--radius); padding: 16px 20px; margin: 12px 0 24px; }
+    .conn-box .url { font-family: 'SF Mono', monospace; font-size: 0.9rem; color: var(--primary); }
+    .conn-box .params { margin-top: 10px; font-size: 0.83rem; color: var(--muted); }
+    .conn-box .params span { color: var(--text); }
+  </style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <h1>🎙️ Voice Room</h1>
+      <p>WebSocket API v2.0</p>
+    </div>
+    <div class="sidebar-section">Overview</div>
+    <a class="sidebar-link" href="#connection">Connection</a>
+    <a class="sidebar-link" href="#flow">Typical Flow</a>
+    <div class="sidebar-section">Client → Server</div>
+    <a class="sidebar-link" href="#ping">ping</a>
+    <a class="sidebar-link" href="#join_room">join_room</a>
+    <a class="sidebar-link" href="#leave_room">leave_room</a>
+    <a class="sidebar-link" href="#take_seat">take_seat</a>
+    <a class="sidebar-link" href="#leave_seat">leave_seat</a>
+    <a class="sidebar-link" href="#toggle_mic">toggle_mic</a>
+    <a class="sidebar-link" href="#send_comment">send_comment</a>
+    <a class="sidebar-link" href="#kick_member">kick_member</a>
+    <a class="sidebar-link" href="#close_room">close_room</a>
+    <div class="sidebar-section">Server → Client</div>
+    <a class="sidebar-link" href="#connected">connected</a>
+    <a class="sidebar-link" href="#snapshot">room.snapshot</a>
+    <a class="sidebar-link" href="#ack">ack</a>
+    <a class="sidebar-link" href="#error">error</a>
+    <a class="sidebar-link" href="#events">Events</a>
+    <div class="sidebar-section">Reference</div>
+    <a class="sidebar-link" href="#schemas">Data Schemas</a>
+    <a class="sidebar-link" href="/api-docs">REST API Docs ↗</a>
+  </nav>
+
+  <!-- Main content -->
+  <main class="content">
+
+    <h2 id="connection">WebSocket API</h2>
+    <p class="lead">Bidirectional real-time connection for voice room events. All messages are JSON.</p>
+
+    <h3>Connection Endpoint</h3>
+    <div class="conn-box">
+      <div class="url">io("<span style="color:#fbbf24">http://localhost:3000</span>", { auth: { userId: "<span style="color:#fbbf24">userId</span>", roomId: "<span style="color:#fbbf24">roomId</span>" } })</div>
+      <div class="params">
+        <div><span>userId</span> — Your user ID (from <code>POST /users</code>)</div>
+        <div><span>roomId</span> — The room ID (from <code>POST /rooms</code> or <code>GET /rooms</code>)</div>
+        <div style="margin-top:8px;color:#60a5fa">npm install socket.io-client</div>
+      </div>
+    </div>
+    <p>The server validates that both the room and user exist before upgrading the connection. Returns HTTP 400/404 if invalid.</p>
+
+    <hr id="flow" />
+    <h2>Typical Flow</h2>
+    <div class="flow">
+      <div><span class="c">Client</span> <span class="arrow">────────────────────────────────────────</span> <span class="s">Server</span></div>
+      <div><span class="arrow">  1. POST /users                    →</span>  <span class="note">get userId</span></div>
+      <div><span class="arrow">  2. GET /rooms or POST /rooms       →</span>  <span class="note">get roomId</span></div>
+      <div><span class="arrow">  3. WS connect                      →</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "connected" }</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "room.snapshot", data: {...} }</span></div>
+      <div><span class="arrow">  4. { type: "join_room" }           →</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "ack", command: "join_room", status: "ok" }</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "event", event: "user_joined", ... }</span>  <span class="note">broadcast to room</span></div>
+      <div><span class="arrow">  5. { type: "take_seat", seatIndex: 1 } →</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "ack", command: "take_seat", status: "ok" }</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "event", event: "mic_changed", ... }</span>  <span class="note">broadcast to room</span></div>
+      <div><span class="arrow">  6. { type: "leave_room" }          →</span></div>
+      <div><span class="arrow">                                     ←</span>  <span class="s">{ type: "ack", command: "leave_room", status: "ok" }</span></div>
+    </div>
+
+    <hr />
+    <h2>Client → Server Commands</h2>
+    <p>Send JSON messages over the WebSocket connection. Every command gets an <span class="inline-code">ack</span> or <span class="inline-code">error</span> response.</p>
+
+    <div class="msg-grid">
+
+      <div class="msg-card" id="ping">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">ping</span>
+          <span class="msg-desc">Keep-alive heartbeat</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "ping"
+}
+
+// Response:
+{ "type": "pong", "roomId": "...", "userId": "..." }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="join_room">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">join_room</span>
+          <span class="msg-desc">Join the room as audience. If approval required, returns status: "pending".</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "join_room"
+}
+
+// Response (direct join):
+{ "type": "ack", "command": "join_room", "status": "ok",
+  "data": { "id": "...", "roomId": "...", "userId": "...", "memberRole": "audience", "seatIndex": -1 } }
+
+// Response (approval required):
+{ "type": "ack", "command": "join_room", "status": "pending",
+  "data": { "id": "...", "roomId": "...", "userId": "...", "status": "pending" } }
+
+// Broadcast to room on success:
+{ "type": "event", "event": "user_joined",
+  "data": { "userId": "...", "nickname": "Alice", "memberRole": "audience" } }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="leave_room">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">leave_room</span>
+          <span class="msg-desc">Leave the room and free any held seat</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "leave_room"
+}
+
+// Response:
+{ "type": "ack", "command": "leave_room", "status": "ok" }
+
+// Broadcast to room:
+{ "type": "event", "event": "user_left",
+  "data": { "userId": "...", "nickname": "Alice" } }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="take_seat">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">take_seat</span>
+          <span class="msg-desc">Occupy a specific seat (go on mic). seatIndex 0 = host seat.</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "take_seat",
+  "seatIndex": 1   // integer, 0 = host seat, 1..N = guest seats
+}
+
+// Response:
+{ "type": "ack", "command": "take_seat", "status": "ok",
+  "data": { "id": "...", "memberRole": "speaker", "seatIndex": 1, ... } }
+
+// Broadcast to room:
+{ "type": "event", "event": "mic_changed",
+  "data": { "userId": "...", "nickname": "Alice", "seatIndex": 1, "memberRole": "speaker" } }
+
+// Errors:
+{ "type": "error", "command": "take_seat", "error": "Seat 1 is already occupied" }
+{ "type": "error", "command": "take_seat", "error": "Seat 1 is locked" }
+{ "type": "error", "command": "take_seat", "error": "User is not in this room" }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="leave_seat">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">leave_seat</span>
+          <span class="msg-desc">Leave current seat (go off mic)</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "leave_seat"
+}
+
+// Response:
+{ "type": "ack", "command": "leave_seat", "status": "ok" }
+
+// Broadcast to room:
+{ "type": "event", "event": "mic_changed",
+  "data": { "userId": "...", "nickname": "Alice", "seatIndex": -1, "memberRole": "audience" } }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="toggle_mic">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">toggle_mic</span>
+          <span class="msg-desc">Shortcut: auto-assign first idle seat (speaker) or leave seat (audience)</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "toggle_mic",
+  "role": "speaker"   // "speaker" | "audience"
+}
+
+// Same response/broadcast as take_seat / leave_seat</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="send_comment">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">send_comment</span>
+          <span class="msg-desc">Post a comment or reply (max 500 chars). Must be in the room.</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>// Top-level comment:
+{ "type": "send_comment", "content": "Hello everyone!" }
+
+// Reply to a comment:
+{ "type": "send_comment", "content": "Agreed!", "parentId": "comment-uuid" }
+
+// Response:
+{ "type": "ack", "command": "send_comment", "status": "ok",
+  "data": { "id": "...", "roomId": "...", "userId": "...", "content": "Hello everyone!",
+            "parentId": null, "replyCount": 0, "nickname": "Alice", "createdAt": 1713600000000 } }
+
+// Broadcast to room:
+{ "type": "event", "event": "message",
+  "data": { "id": "...", "userId": "...", "nickname": "Alice", "content": "Hello everyone!",
+            "parentId": null, "parentNickname": null, "createdAt": 1713600000000 } }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="kick_member">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">kick_member</span>
+          <span class="msg-desc">Kick a member from the room. Owner only.</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "kick_member",
+  "targetUserId": "user-uuid"
+}
+
+// Response:
+{ "type": "ack", "command": "kick_member", "status": "ok" }
+
+// Sent to kicked user:
+{ "type": "event", "event": "member_kicked",
+  "data": { "userId": "...", "nickname": "Bob" } }
+
+// Broadcast to room:
+{ "type": "event", "event": "member_kicked",
+  "data": { "userId": "...", "nickname": "Bob" } }</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="close_room">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-c2s">C→S</span>
+          <span class="msg-type">close_room</span>
+          <span class="msg-desc">Close the room permanently. Owner only.</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "close_room"
+}
+
+// Response:
+{ "type": "ack", "command": "close_room", "status": "ok" }
+
+// Broadcast to ALL room members:
+{ "type": "event", "event": "room_closed",
+  "data": { "roomId": "..." } }</code></pre></div>
+      </div>
+
+    </div><!-- /msg-grid -->
+
+    <hr />
+    <h2>Server → Client Messages</h2>
+
+    <div class="msg-grid">
+
+      <div class="msg-card" id="connected">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-s2c">S→C</span>
+          <span class="msg-type">connected</span>
+          <span class="msg-desc">Sent immediately after WebSocket handshake</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "connected",
+  "roomId": "room-uuid",
+  "userId": "user-uuid"
+}</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="snapshot">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-s2c">S→C</span>
+          <span class="msg-type">room.snapshot</span>
+          <span class="msg-desc">Full room state sent right after connected. Use this to initialize UI.</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "room.snapshot",
+  "roomId": "room-uuid",
+  "data": {
+    "id": "room-uuid",
+    "name": "Chill Vibes",
+    "ownerId": "user-uuid",
+    "maxSpeakers": 8,
+    "status": "active",
+    "requireApproval": true,
+    "announcement": null,
+    "members": [
+      { "id": "...", "userId": "...", "nickname": "Alice",
+        "memberRole": "audience", "seatIndex": -1, "joinedAt": 1713600000000 }
+    ],
+    "seats": [
+      { "roomId": "...", "seatIndex": 0, "userId": null, "nickname": null,
+        "status": "idle", "micEnabled": true },
+      { "roomId": "...", "seatIndex": 1, "userId": null, "nickname": null,
+        "status": "idle", "micEnabled": true }
+    ],
+    "onlineCount": 1
+  }
+}</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="ack">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-s2c">S→C</span>
+          <span class="msg-type">ack</span>
+          <span class="msg-desc">Success response to a command</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "ack",
+  "command": "join_room",   // the command that was executed
+  "status": "ok",           // "ok" | "pending"
+  "data": { ... }           // command-specific result object (optional)
+}</code></pre></div>
+      </div>
+
+      <div class="msg-card" id="error">
+        <div class="msg-header" onclick="toggle(this)">
+          <span class="badge badge-s2c">S→C</span>
+          <span class="msg-type">error</span>
+          <span class="msg-desc">Error response to a command, or connection-level error</span>
+          <span class="chevron">▶</span>
+        </div>
+        <div class="msg-body hidden"><pre><code>{
+  "type": "error",
+  "command": "take_seat",   // which command failed (omitted for connection errors)
+  "error": "Seat 1 is already occupied"
+}</code></pre></div>
+      </div>
+
+    </div>
+
+    <hr id="events" />
+    <h2>Real-time Events</h2>
+    <p>All events share the same envelope. Some events are targeted (only sent to a specific user), others are broadcast to the entire room.</p>
+    <pre><code>{
+  "type": "event",
+  "event": "&lt;event_type&gt;",
+  "roomId": "room-uuid",
+  "data": { ... }   // event-specific payload
+}</code></pre>
+
+    <table class="event-table">
+      <thead>
+        <tr><th>event</th><th>data</th><th>Recipients</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="event-name">user_joined</span></td>
+          <td><span class="event-payload">{ userId, nickname, memberRole }</span></td>
+          <td>All</td>
+          <td>Someone joined the room</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">user_left</span></td>
+          <td><span class="event-payload">{ userId, nickname }</span></td>
+          <td>All</td>
+          <td>Someone left the room</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">mic_changed</span></td>
+          <td><span class="event-payload">{ userId, nickname, seatIndex, memberRole }</span></td>
+          <td>All</td>
+          <td>User went on/off mic. seatIndex=-1 means off mic.</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">seat_locked</span></td>
+          <td><span class="event-payload">{ seatIndex, locked }</span></td>
+          <td>All</td>
+          <td>Owner locked or unlocked a seat</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">seat_muted</span></td>
+          <td><span class="event-payload">{ seatIndex, muted }</span></td>
+          <td>All</td>
+          <td>Owner muted or unmuted a seat</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">room_closed</span></td>
+          <td><span class="event-payload">{ roomId }</span></td>
+          <td>All</td>
+          <td>Room was closed by owner. Disconnect and redirect.</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">member_kicked</span></td>
+          <td><span class="event-payload">{ userId, nickname }</span></td>
+          <td>All + kicked user</td>
+          <td>A member was kicked. Kicked user receives it first.</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">join_request</span></td>
+          <td><span class="event-payload">{ requestId, userId, nickname, avatarUrl }</span></td>
+          <td>Owner only</td>
+          <td>Someone requested to join. Approve or reject via REST API.</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">join_approved</span></td>
+          <td><span class="event-payload">{ requestId, roomId, roomName }</span></td>
+          <td>Requester only</td>
+          <td>Join request was approved. Send join_room command now.</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">join_rejected</span></td>
+          <td><span class="event-payload">{ requestId, roomId, roomName }</span></td>
+          <td>Requester only</td>
+          <td>Join request was rejected.</td>
+        </tr>
+        <tr>
+          <td><span class="event-name">message</span></td>
+          <td><span class="event-payload">{ id, userId, nickname, content, parentId, parentNickname, createdAt }</span></td>
+          <td>All</td>
+          <td>New comment or reply posted in the room</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <hr id="schemas" />
+    <h2>Data Schemas</h2>
+
+    <h3>RoomMember</h3>
+    <pre><code>{
+  "id":         string,   // member record ID
+  "roomId":     string,
+  "userId":     string,
+  "memberRole": "speaker" | "audience",
+  "seatIndex":  number,   // -1 = not on a seat
+  "joinedAt":   number,   // unix ms
+  "nickname":   string,   // included in detail responses
+  "avatarUrl":  string
+}</code></pre>
+
+    <h3>SeatState</h3>
+    <pre><code>{
+  "roomId":     string,
+  "seatIndex":  number,           // 0 = host seat
+  "userId":     string | null,    // null = idle
+  "nickname":   string | null,
+  "status":     "idle" | "occupied" | "locked" | "muted",
+  "micEnabled": boolean
+}</code></pre>
+
+    <h3>Comment / Reply</h3>
+    <pre><code>{
+  "id":             string,
+  "roomId":         string,
+  "userId":         string,
+  "parentId":       string | null,   // null = top-level comment
+  "content":        string,
+  "createdAt":      number,          // unix ms
+  "nickname":       string,
+  "avatarUrl":      string,
+  "replyCount":     number,          // top-level only
+  "parentNickname": string | null    // replies only
+}</code></pre>
+
+    <h3>JoinRequest</h3>
+    <pre><code>{
+  "id":        string,
+  "roomId":    string,
+  "userId":    string,
+  "status":    "pending" | "approved" | "rejected",
+  "createdAt": number
+}</code></pre>
+
+    <hr />
+    <h2>Client Example</h2>
+    <pre><code>// npm install socket.io-client
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:3000", {
+  auth: { userId: "USER_ID", roomId: "ROOM_ID" }
+});
+
+// ── Server → Client ──────────────────────────────────────────────────────────
+
+socket.on("connect", () => console.log("Connected:", socket.id));
+socket.on("connect_error", (err) => console.error("Auth failed:", err.message));
+
+socket.on("connected",     ({ roomId, userId }) => console.log("Session ready"));
+socket.on("room.snapshot", ({ data }) => initUI(data));   // members + seats
+
+socket.on("ack",   ({ command, status, data }) => console.log(command, status, data));
+socket.on("error", ({ command, error }) => showError(error));
+socket.on("pong",  () => console.log("pong"));
+
+// Real-time events
+socket.on("event", ({ event, data }) => {
+  switch (event) {
+    case "user_joined":   addMember(data);           break;
+    case "user_left":     removeMember(data.userId); break;
+    case "mic_changed":   updateSeat(data);          break;
+    case "room_closed":   redirectToLobby();         break;
+    case "member_kicked": if (data.userId === myId) redirectToLobby(); break;
+    case "join_approved": socket.emit("join_room");  break;
+    case "message":       appendComment(data);       break;
+  }
+});
+
+// ── Client → Server ──────────────────────────────────────────────────────────
+
+socket.emit("join_room");
+socket.emit("take_seat",    { seatIndex: 1 });
+socket.emit("leave_seat");
+socket.emit("toggle_mic",   { role: "speaker" });
+socket.emit("send_comment", { content: "Hello!", parentId: null });
+socket.emit("kick_member",  { targetUserId: "user-uuid" });
+socket.emit("close_room");
+socket.emit("ping");</code></pre>ws.send(JSON.stringify({ type: 'send_comment', content: 'Hello!' }));</code></pre>
+
+  </main>
+</div>
+
+<script>
+  function toggle(header) {
+    const card = header.closest('.msg-card');
+    const body = card.querySelector('.msg-body');
+    const isOpen = card.classList.contains('open');
+    card.classList.toggle('open', !isOpen);
+    body.classList.toggle('hidden', isOpen);
+  }
+
+  // Highlight active sidebar link on scroll
+  const sections = document.querySelectorAll('[id]');
+  const links = document.querySelectorAll('.sidebar-link[href^="#"]');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const active = document.querySelector(`.sidebar-link[href="#${e.target.id}"]`);
+        if (active) active.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

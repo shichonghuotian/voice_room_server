@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+
+# Keep SQLite data for server sync
+# data/ and *.db are intentionally tracked

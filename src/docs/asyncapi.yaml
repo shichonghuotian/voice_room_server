@@ -1,0 +1,282 @@
+asyncapi: '2.6.0'
+
+info:
+  title: Voice Room WebSocket API
+  version: '2.0.0'
+  description: |
+    Bidirectional WebSocket API for real-time voice room events.
+
+    ## Connection
+
+    ```
+    ws://localhost:3000/rooms/{roomId}/ws?userId={userId}
+    ```
+
+    On connect, the server immediately sends:
+    1. `connected` — confirms the connection
+    2. `room.snapshot` — full room state (members + seats)
+
+servers:
+  local:
+    url: 'ws://localhost:3000'
+    protocol: ws
+    description: Local development server
+
+channels:
+  /rooms/{roomId}/ws:
+    parameters:
+      roomId:
+        description: The room ID to connect to
+        schema:
+          type: string
+      userId:
+        description: The authenticated user ID (query param)
+        schema:
+          type: string
+    subscribe:
+      summary: Events pushed from server to client
+      message:
+        oneOf:
+          - $ref: '#/components/messages/Connected'
+          - $ref: '#/components/messages/RoomSnapshot'
+          - $ref: '#/components/messages/EventEnvelope'
+          - $ref: '#/components/messages/Ack'
+          - $ref: '#/components/messages/Error'
+          - $ref: '#/components/messages/Pong'
+    publish:
+      summary: Commands sent from client to server
+      message:
+        oneOf:
+          - $ref: '#/components/messages/Ping'
+          - $ref: '#/components/messages/JoinRoom'
+          - $ref: '#/components/messages/LeaveRoom'
+          - $ref: '#/components/messages/ToggleMic'
+          - $ref: '#/components/messages/TakeSeat'
+          - $ref: '#/components/messages/LeaveSeat'
+          - $ref: '#/components/messages/SendComment'
+          - $ref: '#/components/messages/KickMember'
+          - $ref: '#/components/messages/CloseRoom'
+
+components:
+  messages:
+    # ── Server → Client ────────────────────────────────────────────────────────
+
+    Connected:
+      name: connected
+      summary: Sent immediately after WebSocket handshake
+      payload:
+        type: object
+        properties:
+          type:    { type: string, enum: [connected] }
+          roomId:  { type: string }
+          userId:  { type: string }
+
+    RoomSnapshot:
+      name: room.snapshot
+      summary: Full room state sent on connect
+      payload:
+        type: object
+        properties:
+          type:   { type: string, enum: [room.snapshot] }
+          roomId: { type: string }
+          data:
+            type: object
+            properties:
+              room:    { $ref: '#/components/schemas/Room' }
+              members: { type: array, items: { $ref: '#/components/schemas/RoomMember' } }
+              seats:   { type: array, items: { $ref: '#/components/schemas/SeatState' } }
+
+    EventEnvelope:
+      name: event
+      summary: Real-time event pushed to all room members (or targeted user)
+      payload:
+        type: object
+        required: [type, event, data, roomId]
+        properties:
+          type:   { type: string, enum: [event] }
+          event:  { $ref: '#/components/schemas/EventType' }
+          roomId: { type: string }
+          data:   { type: object, description: 'Event-specific payload — see EventType' }
+      examples:
+        - name: user_joined
+          payload:
+            type: event
+            event: user_joined
+            roomId: abc-123
+            data: { userId: u1, nickname: Alice, memberRole: audience }
+        - name: mic_changed
+          payload:
+            type: event
+            event: mic_changed
+            roomId: abc-123
+            data: { userId: u1, nickname: Alice, seatIndex: 2, memberRole: speaker }
+        - name: message
+          payload:
+            type: event
+            event: message
+            roomId: abc-123
+            data: { id: c1, userId: u1, nickname: Alice, content: Hello!, parentId: null, createdAt: 1713600000000 }
+
+    Ack:
+      name: ack
+      summary: Command acknowledgement
+      payload:
+        type: object
+        properties:
+          type:    { type: string, enum: [ack] }
+          command: { type: string }
+          status:  { type: string, enum: [ok, pending] }
+          data:    { type: object }
+
+    Error:
+      name: error
+      summary: Error response to a command
+      payload:
+        type: object
+        properties:
+          type:    { type: string, enum: [error] }
+          command: { type: string }
+          error:   { type: string }
+
+    Pong:
+      name: pong
+      summary: Response to a ping command
+      payload:
+        type: object
+        properties:
+          type:   { type: string, enum: [pong] }
+          roomId: { type: string }
+          userId: { type: string }
+
+    # ── Client → Server ────────────────────────────────────────────────────────
+
+    Ping:
+      name: ping
+      summary: Keep-alive ping
+      payload:
+        type: object
+        properties:
+          type: { type: string, enum: [ping] }
+
+    JoinRoom:
+      name: join_room
+      summary: Join the room. If approval required, returns status=pending.
+      payload:
+        type: object
+        properties:
+          type: { type: string, enum: [join_room] }
+
+    LeaveRoom:
+      name: leave_room
+      summary: Leave the room
+      payload:
+        type: object
+        properties:
+          type: { type: string, enum: [leave_room] }
+
+    ToggleMic:
+      name: toggle_mic
+      summary: Go on/off mic (compat — auto-assigns first idle seat)
+      payload:
+        type: object
+        required: [type, role]
+        properties:
+          type: { type: string, enum: [toggle_mic] }
+          role: { type: string, enum: [speaker, audience] }
+
+    TakeSeat:
+      name: take_seat
+      summary: Take a specific seat index (go on mic)
+      payload:
+        type: object
+        required: [type, seatIndex]
+        properties:
+          type:      { type: string, enum: [take_seat] }
+          seatIndex: { type: integer, minimum: 0, description: '0 = host seat' }
+
+    LeaveSeat:
+      name: leave_seat
+      summary: Leave current seat (go off mic)
+      payload:
+        type: object
+        properties:
+          type: { type: string, enum: [leave_seat] }
+
+    SendComment:
+      name: send_comment
+      summary: Post a comment or reply in the room
+      payload:
+        type: object
+        required: [type, content]
+        properties:
+          type:     { type: string, enum: [send_comment] }
+          content:  { type: string, maxLength: 500 }
+          parentId: { type: string, description: 'Omit for top-level comment; provide to reply' }
+
+    KickMember:
+      name: kick_member
+      summary: Kick a member (owner only)
+      payload:
+        type: object
+        required: [type, targetUserId]
+        properties:
+          type:         { type: string, enum: [kick_member] }
+          targetUserId: { type: string }
+
+    CloseRoom:
+      name: close_room
+      summary: Close the room (owner only). Broadcasts room_closed to all clients.
+      payload:
+        type: object
+        properties:
+          type: { type: string, enum: [close_room] }
+
+  schemas:
+    EventType:
+      type: string
+      enum:
+        - user_joined
+        - user_left
+        - mic_changed
+        - seat_locked
+        - seat_muted
+        - room_closed
+        - member_kicked
+        - join_request
+        - join_approved
+        - join_rejected
+        - message
+
+    Room:
+      type: object
+      properties:
+        id:              { type: string }
+        name:            { type: string }
+        ownerId:         { type: string }
+        maxSpeakers:     { type: integer }
+        status:          { type: string, enum: [active, closed] }
+        requireApproval: { type: boolean }
+        announcement:    { type: string, nullable: true }
+        createdAt:       { type: integer }
+
+    RoomMember:
+      type: object
+      properties:
+        id:         { type: string }
+        roomId:     { type: string }
+        userId:     { type: string }
+        memberRole: { type: string, enum: [speaker, audience] }
+        seatIndex:  { type: integer, description: '-1 = not on a seat' }
+        joinedAt:   { type: integer }
+        nickname:   { type: string }
+        avatarUrl:  { type: string }
+
+    SeatState:
+      type: object
+      properties:
+        roomId:     { type: string }
+        seatIndex:  { type: integer }
+        userId:     { type: string, nullable: true }
+        nickname:   { type: string, nullable: true }
+        status:     { type: string, enum: [idle, occupied, locked, muted] }
+        micEnabled: { type: boolean }

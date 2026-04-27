@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Room — Lobby</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="logo-sm">🎙️</span>
+      <span class="app-name">Voice Room</span>
+    </div>
+    <div class="topbar-right">
+      <span id="userBadge" class="user-badge"></span>
+      <button class="btn btn-ghost btn-sm" onclick="logout()">Logout</button>
+    </div>
+  </header>
+
+  <main class="lobby-main">
+    <div class="lobby-header">
+      <h2>Live Rooms</h2>
+      <button class="btn btn-primary" id="createBtn">+ Create Room</button>
+    </div>
+
+    <!-- Pending Approval Modal -->
+    <div id="pendingModal" class="modal-overlay hidden">
+      <div class="modal" style="text-align:center">
+        <div style="font-size:2.5rem;margin-bottom:12px">⏳</div>
+        <h3>Waiting for approval</h3>
+        <p style="color:var(--text-muted);font-size:0.9rem;margin:10px 0 20px">
+          Your request to join <strong id="pendingRoomName"></strong> has been sent to the host.
+        </p>
+        <button class="btn btn-ghost btn-sm" onclick="cancelPending()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Create Room Modal -->
+    <div id="createModal" class="modal-overlay hidden">
+      <div class="modal">
+        <h3>Create a Room</h3>
+        <label>Room Name</label>
+        <input id="roomName" type="text" placeholder="e.g. Chill Vibes" maxlength="40" />
+        <label>Category</label>
+        <select id="categoryId">
+          <option value="">— None —</option>
+          <option value="cat-culture">Culture</option>
+          <option value="cat-music">Music</option>
+          <option value="cat-technology">Technology</option>
+          <option value="cat-games">Games</option>
+          <option value="cat-talk">Talk</option>
+        </select>
+        <label>Max Speakers</label>
+        <select id="maxSpeakers">
+          <option value="2">2</option>
+          <option value="4">4</option>
+          <option value="8" selected>8</option>
+          <option value="16">16</option>
+        </select>
+        <label>Privacy</label>
+        <select id="privacy">
+          <option value="public">Public — anyone can join</option>
+          <option value="private" selected>Private — requires approval</option>
+        </select>
+        <label>Mic Option</label>
+        <select id="micOption">
+          <option value="mic_and_comments" selected>Mic &amp; Comments</option>
+          <option value="mic_only">Mic Only</option>
+        </select>
+        <div id="createError" class="error-msg hidden"></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" onclick="closeCreateModal()">Cancel</button>
+          <button class="btn btn-primary" id="confirmCreate">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="roomList" class="room-grid">
+      <div class="loading">Loading rooms...</div>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ─── Auth guard ───────────────────────────────────────────────────────────
+    const user = JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('user') || 'null');
+    if (!user) window.location.href = 'index.html';
+
+    document.getElementById('userBadge').textContent = `👤 ${user.nickname}`;
+
+    function logout() {
+      sessionStorage.clear();
+      localStorage.removeItem('user');
+      localStorage.removeItem('currentRoom');
+      window.location.href = 'index.html';
+    }
+
+    // ─── Create Room Modal ────────────────────────────────────────────────────
+    document.getElementById('createBtn').addEventListener('click', () => {
+      document.getElementById('createModal').classList.remove('hidden');
+      document.getElementById('roomName').focus();
+    });
+
+    function closeCreateModal() {
+      document.getElementById('createModal').classList.add('hidden');
+      document.getElementById('createError').classList.add('hidden');
+      document.getElementById('roomName').value = '';
+    }
+
+    document.getElementById('confirmCreate').addEventListener('click', createRoom);
+    document.getElementById('roomName').addEventListener('keydown', e => {
+      if (e.key === 'Enter') createRoom();
+    });
+
+    async function createRoom() {
+      const name = document.getElementById('roomName').value.trim();
+      const maxSpeakers = parseInt(document.getElementById('maxSpeakers').value);
+      const privacy   = document.getElementById('privacy').value;
+      const micOption = document.getElementById('micOption').value;
+      const categoryId = document.getElementById('categoryId').value || undefined;
+      const errEl = document.getElementById('createError');
+      if (!name) {
+        errEl.textContent = 'Room name is required';
+        errEl.classList.remove('hidden');
+        return;
+      }
+      const btn = document.getElementById('confirmCreate');
+      btn.disabled = true;
+      try {
+        const res  = await fetch('/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, ownerId: user.id, maxSpeakers, privacy, micOption, categoryId }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          errEl.textContent = data.error;
+          errEl.classList.remove('hidden');
+          return;
+        }
+        closeCreateModal();
+        goToRoom(data.data);
+      } catch {
+        errEl.textContent = 'Failed to create room';
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // ─── Room List ────────────────────────────────────────────────────────────
+    function escHtml(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    async function loadRooms() {
+      const container = document.getElementById('roomList');
+      try {
+        const res  = await fetch('/rooms/recommended');
+        const data = await res.json();
+        if (!data.success) { container.innerHTML = '<div class="empty">Failed to load rooms</div>'; return; }
+        const rooms = data.data;
+        if (rooms.length === 0) {
+          container.innerHTML = '<div class="empty">No active rooms. Be the first to create one!</div>';
+          return;
+        }
+        container.innerHTML = rooms.map(r => `
+          <div class="room-card" onclick="joinRoom('${r.id}','${escHtml(r.title)}')">
+            <div class="room-card-icon">🎙️</div>
+            <div class="room-card-body">
+              <div class="room-card-name">${escHtml(r.title)}</div>
+              <div class="room-card-meta">
+                ${r.category ? escHtml(r.category.name) + ' · ' : ''}
+                Host: ${escHtml(r.host.nickname)} ·
+                🎤 ${r.speakerCount}/${r.maxSpeakers}
+                ${r.privacy === 'private' ? ' · 🔒 Approval' : ''}
+                ${r.micOption === 'mic_only' ? ' · 🎙️ Mic only' : ''}
+              </div>
+            </div>
+            <button class="btn btn-primary btn-sm">${r.privacy === 'private' ? 'Request' : 'Join'}</button>
+          </div>
+        `).join('');
+      } catch {
+        container.innerHTML = '<div class="empty">Server unreachable</div>';
+      }
+    }
+
+    function goToRoom(room) {
+      sessionStorage.setItem('currentRoom', JSON.stringify(room));
+      localStorage.setItem('currentRoom', JSON.stringify(room));
+      window.location.href = 'room.html';
+    }
+
+    async function joinRoom(roomId, roomName) {
+      try {
+        const res  = await fetch(`/rooms/${roomId}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: user.id }),
+        });
+        const data = await res.json();
+
+        if (res.status === 202) {
+          // Needs approval — connect via Socket.IO to wait for result
+          showPendingModal(roomId, roomName);
+          return;
+        }
+        if (!data.success) { alert(data.error); return; }
+
+        const detail = await fetch(`/rooms/${roomId}`).then(r => r.json());
+        goToRoom(detail.data);
+      } catch {
+        alert('Failed to join room');
+      }
+    }
+
+    // ─── Pending approval (Socket.IO) ─────────────────────────────────────────
+    let pendingSocket = null;
+
+    function showPendingModal(roomId, roomName) {
+      document.getElementById('pendingRoomName').textContent = roomName;
+      document.getElementById('pendingModal').classList.remove('hidden');
+
+      // Connect to the room socket just to receive the approval/rejection event
+      pendingSocket = io({ path: '/socket.io', auth: { userId: user.id } });
+
+      pendingSocket.on('connect', () => {
+        pendingSocket.emit('subscribe_room', { roomId }, () => {});
+      });
+
+      pendingSocket.on('event', async ({ event, data }) => {
+        if (event === 'join_approved') {
+          pendingSocket.disconnect();
+          document.getElementById('pendingModal').classList.add('hidden');
+          const detail = await fetch(`/rooms/${roomId}`).then(r => r.json());
+          goToRoom(detail.data);
+        } else if (event === 'join_rejected') {
+          pendingSocket.disconnect();
+          document.getElementById('pendingModal').classList.add('hidden');
+          alert(`Your request to join "${roomName}" was rejected.`);
+        }
+      });
+
+      pendingSocket.on('connect_error', err => {
+        // Room might not exist yet or other error — ignore silently
+        console.warn('Pending socket error:', err.message);
+      });
+    }
+
+    function cancelPending() {
+      if (pendingSocket) {
+        pendingSocket.emit('unsubscribe_room', { roomId: pendingRoomId }, () => {});
+        pendingSocket.disconnect();
+        pendingSocket = null;
+      }
+      document.getElementById('pendingModal').classList.add('hidden');
+    }
+
+    loadRooms();
+    setInterval(loadRooms, 10_000);
+  </script>
+</body>
+</html>

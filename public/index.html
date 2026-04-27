@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Room — Login</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .preset-users {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .preset-label {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      text-align: left;
+      margin-bottom: 4px;
+    }
+    .preset-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      color: var(--text);
+      font-size: 0.9rem;
+      text-align: left;
+      width: 100%;
+    }
+    .preset-btn:hover { border-color: var(--primary); background: var(--bg2); }
+    .preset-btn .p-avatar {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--primary), #a78bfa);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem; font-weight: 700; color: #fff;
+      flex-shrink: 0;
+    }
+    .preset-btn .p-info { flex: 1; }
+    .preset-btn .p-name { font-weight: 600; }
+    .preset-btn .p-id   { font-size: 0.72rem; color: var(--text-muted); }
+    .divider {
+      display: flex; align-items: center; gap: 10px;
+      color: var(--text-muted); font-size: 0.78rem;
+      margin: 16px 0;
+    }
+    .divider::before, .divider::after {
+      content: ''; flex: 1;
+      height: 1px; background: var(--border);
+    }
+  </style>
+</head>
+<body class="center-page">
+  <div class="login-card">
+    <div class="logo">🎙️</div>
+    <h1>Voice Room</h1>
+    <p class="subtitle">Choose a test user or enter a nickname</p>
+
+    <!-- Preset users -->
+    <div class="preset-users" id="presetList">
+      <div class="preset-label">Quick login</div>
+      <!-- filled by JS -->
+    </div>
+
+    <div class="divider">or create new</div>
+
+    <input id="nickname" type="text" placeholder="Enter nickname" maxlength="32" />
+    <div id="error" class="error-msg hidden"></div>
+    <button id="enterBtn" class="btn btn-primary btn-full" style="margin-top:10px">Enter</button>
+  </div>
+
+  <script>
+    const PRESET_USERS = [
+      { id: 'user-alice', nickname: 'Alice' },
+      { id: 'user-bob',   nickname: 'Bob'   },
+      { id: 'user-carol', nickname: 'Carol' },
+      { id: 'user-dave',  nickname: 'Dave'  },
+      { id: 'user-eve',   nickname: 'Eve'   },
+      { id: 'user-frank', nickname: 'Frank' },
+    ];
+
+    const errorEl  = document.getElementById('error');
+    const btn      = document.getElementById('enterBtn');
+    const input    = document.getElementById('nickname');
+    const presetEl = document.getElementById('presetList');
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.classList.remove('hidden');
+    }
+
+    function saveAndGo(user) {
+      sessionStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('user', JSON.stringify(user));
+      window.location.href = 'lobby.html';
+    }
+
+    // Try to login with a preset user (must exist in DB via seed)
+    async function loginPreset(u) {
+      const res  = await fetch(`/users/${u.id}`);
+      const data = await res.json();
+      if (data.success) {
+        saveAndGo(data.data);
+      } else {
+        // User not seeded yet — create on the fly
+        await loginNew(u.nickname);
+      }
+    }
+
+    async function loginNew(nickname) {
+      nickname = (nickname || input.value).trim();
+      if (!nickname) return showError('Please enter a nickname');
+      btn.disabled = true;
+      btn.textContent = 'Entering...';
+      errorEl.classList.add('hidden');
+      try {
+        const res  = await fetch('/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ nickname }),
+        });
+        const data = await res.json();
+        if (!data.success) return showError(data.error);
+        saveAndGo(data.data);
+      } catch {
+        showError('Server unreachable. Is the server running?');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Enter';
+      }
+    }
+
+    // Render preset buttons
+    const label = presetEl.querySelector('.preset-label');
+    PRESET_USERS.forEach(u => {
+      const btn2 = document.createElement('button');
+      btn2.className = 'preset-btn';
+      btn2.innerHTML = `
+        <div class="p-avatar">${u.nickname[0]}</div>
+        <div class="p-info">
+          <div class="p-name">${u.nickname}</div>
+          <div class="p-id">${u.id}</div>
+        </div>
+        <span style="color:var(--text-muted);font-size:0.8rem">→</span>
+      `;
+      btn2.addEventListener('click', () => loginPreset(u));
+      presetEl.appendChild(btn2);
+    });
+
+    btn.addEventListener('click', () => loginNew());
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') loginNew(); });
+  </script>
+</body>
+</html>

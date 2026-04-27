@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Room</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .seat-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+    .seat-card {
+      position: relative;
+      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 12px 10px;
+      min-width: 84px; cursor: default; transition: border-color 0.15s;
+    }
+    .seat-card.empty { cursor: pointer; opacity: 0.6; }
+    .seat-card.empty:hover { border-color: var(--primary); opacity: 1; }
+    .seat-card.is-me { border-color: var(--primary); }
+    .seat-card.locked { opacity: 0.4; cursor: not-allowed; }
+    .seat-num {
+      position: absolute; top: 5px; left: 8px;
+      font-size: 0.65rem; color: var(--text-muted);
+    }
+    .seat-mic {
+      position: absolute; top: 5px; right: 8px;
+      font-size: 0.7rem;
+    }
+    .seat-name {
+      font-size: 0.8rem; font-weight: 500;
+      max-width: 72px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; text-align: center;
+    }
+    .seat-actions { display: flex; gap: 4px; margin-top: 2px; }
+    .audience-list { display: flex; flex-direction: column; gap: 6px; }
+    .audience-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 10px; border-radius: var(--radius-sm);
+      background: var(--bg3); border: 1px solid transparent;
+    }
+    .audience-row.is-me { border-color: var(--primary); }
+    .row-spacer { flex: 1; }
+    .ws-dot {
+      width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    }
+    .ws-dot.connected    { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .ws-dot.disconnected { background: var(--text-muted); }
+    .comment-item { display: flex; gap: 10px; align-items: flex-start; }
+    .comment-avatar {
+      width: 32px; height: 32px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--primary), #a78bfa);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .comment-body { flex: 1; min-width: 0; }
+    .comment-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+    .comment-author { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); }
+    .comment-author.me { color: var(--primary); }
+    .comment-time { font-size: 0.7rem; color: var(--text-muted); }
+    .comment-text { font-size: 0.88rem; line-height: 1.5; word-break: break-word; }
+    .comment-reply-to { font-size: 0.73rem; color: var(--primary); margin-bottom: 2px; }
+    .btn-reply { background: none; border: none; color: var(--text-muted); font-size: 0.75rem; cursor: pointer; padding: 2px 0; margin-top: 3px; }
+    .btn-reply:hover { color: var(--primary); }
+    .reply-banner {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 14px; background: rgba(108,99,255,0.1);
+      border-top: 1px solid var(--primary); font-size: 0.82rem; color: var(--primary);
+      flex-shrink: 0;
+    }
+    .jr-card {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg2); border: 1px solid var(--primary);
+      border-radius: var(--radius); padding: 10px 14px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      animation: slideIn 0.2s ease;
+    }
+    @keyframes slideIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+    .jr-info { flex: 1; }
+    .jr-name { font-size: 0.88rem; font-weight: 600; }
+    .jr-label { font-size: 0.73rem; color: var(--text-muted); }
+    #joinRequestPanel {
+      position: fixed; top: 64px; right: 16px; z-index: 250;
+      display: flex; flex-direction: column; gap: 8px; max-width: 300px;
+    }
+  </style>
+</head>
+<body class="room-page">
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="btn btn-ghost btn-sm" id="leaveBtn">← Leave</button>
+      <span id="roomTitle" class="room-title"></span>
+    </div>
+    <div class="topbar-right">
+      <span id="wsDot" class="ws-dot disconnected" title="Socket.IO"></span>
+      <span id="userBadge" class="user-badge"></span>
+      <button id="closeRoomBtn" class="btn btn-danger btn-sm hidden">Close Room</button>
+    </div>
+  </header>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="joinRequestPanel"></div>
+
+  <div class="room-body">
+    <!-- Left panel -->
+    <div class="room-left">
+      <section class="panel-section">
+        <div class="section-header">
+          <h3>🎤 Seats</h3>
+          <span id="seatInfo" class="count-badge">0 / 0</span>
+        </div>
+        <div id="seatGrid" class="seat-grid"></div>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-header">
+          <h3>👥 Audience</h3>
+          <span id="audienceCount" class="count-badge">0</span>
+        </div>
+        <div id="audienceList" class="audience-list"></div>
+      </section>
+
+      <div class="room-controls">
+        <button id="micBtn" class="btn btn-mic">
+          <span id="micIcon">🎤</span>
+          <span id="micLabel">Go on Mic</span>
+        </button>
+        <div id="myStatus" class="my-status">👂 Listening</div>
+      </div>
+    </div>
+
+    <!-- Right panel: comments -->
+    <div class="room-right">
+      <div class="comments-panel">
+        <div class="comments-header">
+          <h3>💬 Comments</h3>
+          <button class="btn btn-ghost btn-xs" id="refreshComments">↺</button>
+        </div>
+        <div id="commentList" class="comment-list"></div>
+        <div id="replyBanner" class="reply-banner hidden">
+          <span id="replyBannerText"></span>
+          <button class="btn btn-ghost btn-xs" id="cancelReplyBtn">✕</button>
+        </div>
+        <div class="comment-input-area">
+          <textarea id="commentInput" class="comment-textarea" placeholder="Write a comment…" maxlength="500" rows="2"></textarea>
+          <div class="comment-input-footer">
+            <span id="charCount" class="char-count">0 / 500</span>
+            <button class="btn btn-primary btn-sm" id="sendCommentBtn">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ─── Bootstrap ────────────────────────────────────────────────────────────
+    const user = JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('user') || 'null');
+    const room = JSON.parse(sessionStorage.getItem('currentRoom') || localStorage.getItem('currentRoom') || 'null');
+    if (!user || !room) { window.location.href = 'lobby.html'; }
+
+    const isOwner = room.ownerId === user.id;
+    document.title = (room.name || room.title || 'Room') + ' — Voice Room';
+    document.getElementById('roomTitle').textContent = room.name || room.title || 'Room';
+    document.getElementById('userBadge').textContent = '👤 ' + user.nickname;
+    if (isOwner) document.getElementById('closeRoomBtn').classList.remove('hidden');
+
+    // ─── State ────────────────────────────────────────────────────────────────
+    let myRole = 'audience';   // 'speaker' | 'audience'
+    let mySeatIndex = -1;
+    let replyToId = null;
+    let replyToNickname = null;
+    let snapshot = null;       // latest RoomDetail
+
+    // ─── Toast ────────────────────────────────────────────────────────────────
+    let toastTimer = null;
+    function toast(msg, type) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast' + (type ? ' ' + type : '');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 3000);
+    }
+
+    // ─── Socket.IO ────────────────────────────────────────────────────────────
+    // Global user-level socket — no roomId in handshake
+    const socket = io({ path: '/socket.io', auth: { userId: user.id } });
+
+    const wsDot = document.getElementById('wsDot');
+    socket.on('connect', () => {
+      wsDot.className = 'ws-dot connected';
+      // Step 1: subscribe to room event stream → get snapshot
+      socket.emit('subscribe_room', { roomId: room.id }, (res) => {
+        if (res.status === 'error') { toast(res.error, 'error'); return; }
+        // Step 2: join room membership
+        socket.emit('join_room', { roomId: room.id }, (r) => {
+          if (r.status === 'error') toast(r.error, 'error');
+          else if (r.status === 'pending') toast('Waiting for host approval…');
+        });
+      });
+    });
+
+    socket.on('disconnect', () => { wsDot.className = 'ws-dot disconnected'; });
+    socket.on('connect_error', (err) => { toast(err.message, 'error'); });
+
+    socket.on('room.snapshot', ({ data }) => {
+      snapshot = data;
+      // Sync my role from snapshot
+      const mySpkSeat = (data.speakers?.seats || []).find(s => s.userId === user.id);
+      if (mySpkSeat) { myRole = 'speaker'; mySeatIndex = mySpkSeat.seatIndex; }
+      else { myRole = 'audience'; mySeatIndex = -1; }
+      updateMicButton();
+      renderAll(data);
+      loadComments();
+    });
+
+    // ─── Server-push events ───────────────────────────────────────────────────
+    socket.on('event', ({ event, data }) => {
+      switch (event) {
+        case 'user_joined':
+          toast('👋 ' + data.nickname + ' joined');
+          refreshSnapshot();
+          break;
+        case 'user_left':
+          toast(data.nickname + ' left');
+          refreshSnapshot();
+          break;
+        case 'member_kicked':
+          if (data.userId === user.id) {
+            toast('You were kicked from the room', 'error');
+            setTimeout(() => window.location.href = 'lobby.html', 1500);
+          } else {
+            toast(data.nickname + ' was kicked');
+            refreshSnapshot();
+          }
+          break;
+        case 'mic_changed':
+          refreshSnapshot();
+          if (data.userId === user.id) {
+            myRole = data.memberRole;
+            mySeatIndex = data.seatIndex;
+            updateMicButton();
+          }
+          break;
+        case 'seat_locked':
+          toast('Seat ' + data.seatIndex + (data.locked ? ' locked' : ' unlocked'));
+          refreshSnapshot();
+          break;
+        case 'seat_muted':
+          toast('Seat ' + data.seatIndex + (data.muted ? ' muted' : ' unmuted'));
+          refreshSnapshot();
+          break;
+        case 'message':
+          appendComment(data);
+          break;
+        case 'join_request':
+          if (isOwner) showJoinRequest(data);
+          break;
+        case 'join_approved':
+          toast('✅ Your request was approved!');
+          refreshSnapshot();
+          break;
+        case 'join_rejected':
+          toast('❌ Your request was rejected', 'error');
+          break;
+        case 'room_closed':
+          toast('Room has been closed', 'error');
+          setTimeout(() => window.location.href = 'lobby.html', 1500);
+          break;
+      }
+    });
+
+    async function refreshSnapshot() {
+      const res  = await fetch('/rooms/' + room.id);
+      const data = await res.json();
+      if (data.success) { snapshot = data.data; renderAll(data.data); }
+    }
+
+    // ─── Render ───────────────────────────────────────────────────────────────
+    function esc(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function avatarHtml(nickname, cls) {
+      cls = cls || '';
+      return '<div class="avatar ' + cls + '">' + esc(nickname[0].toUpperCase()) + '</div>';
+    }
+
+    function renderAll(detail) {
+      renderSeats(detail);
+      renderAudience(detail);
+    }
+
+    function renderSeats(detail) {
+      const grid = document.getElementById('seatGrid');
+      // Support both old structure (detail.seats) and new (detail.speakers.seats)
+      const speakersInfo = detail.speakers || { max: detail.maxSpeakers || 8, count: 0, seats: detail.seats || [] };
+      const seats = speakersInfo.seats || [];
+      document.getElementById('seatInfo').textContent = speakersInfo.count + ' / ' + speakersInfo.max;
+
+      if (seats.length === 0) {
+        grid.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:8px 0">No speakers on mic</div>';
+        return;
+      }
+
+      grid.innerHTML = seats.map(seat => {
+        const isMe = seat.userId === user.id;
+        const isLocked = seat.status === 'locked';
+        let cls = 'seat-card' + (isMe ? ' is-me' : '') + (isLocked ? ' locked' : '');
+        const micIcon = seat.micEnabled ? '🎙️' : '🔇';
+        const hostBadge = seat.isHost ? '<span class="tag owner-tag" style="font-size:0.6rem;padding:1px 4px">Host</span>' : '';
+
+        let actions = '';
+        if (isOwner && !isMe) {
+          actions += '<button class="btn btn-xs btn-ghost" onclick="kickFromSeat(\'' + seat.userId + '\')">Kick</button>';
+          actions += '<button class="btn btn-xs btn-ghost" onclick="toggleMuteSeat(' + seat.seatIndex + ',' + seat.micEnabled + ')">' + (seat.micEnabled ? 'Mute' : 'Unmute') + '</button>';
+        }
+        if (isOwner && !seat.isHost) {
+          actions += '<button class="btn btn-xs btn-ghost" onclick="toggleLockSeat(' + seat.seatIndex + ',' + (seat.status === 'locked') + ')">' + (isLocked ? '🔓' : '🔒') + '</button>';
+        }
+
+        return '<div class="' + cls + '">' +
+          '<span class="seat-num">#' + seat.seatIndex + '</span>' +
+          '<span class="seat-mic">' + micIcon + '</span>' +
+          '<div class="avatar avatar-sm">' + esc(seat.nickname[0].toUpperCase()) + '</div>' +
+          '<div class="seat-name">' + esc(seat.nickname) + '</div>' +
+          hostBadge +
+          (actions ? '<div class="seat-actions">' + actions + '</div>' : '') +
+          '</div>';
+      }).join('');
+    }
+
+    function renderAudience(detail) {
+      const list = document.getElementById('audienceList');
+      // Support both old structure (detail.members) and new (detail.audience.members)
+      const audienceInfo = detail.audience || { max: 100, count: 0, members: [] };
+      const members = audienceInfo.members || (detail.members || []).filter(m => m.memberRole === 'audience');
+      document.getElementById('audienceCount').textContent = members.length;
+
+      if (members.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;padding:8px 0">No audience</div>';
+        return;
+      }
+      list.innerHTML = members.map(m => {
+        const isMe = m.userId === user.id;
+        const isRoomOwner = m.userId === (detail.host ? detail.host.userId : detail.ownerId);
+        return '<div class="audience-row' + (isMe ? ' is-me' : '') + '">' +
+          '<div class="avatar avatar-sm">' + esc(m.nickname[0].toUpperCase()) + '</div>' +
+          '<span style="font-size:0.88rem;font-weight:500">' + esc(m.nickname) + '</span>' +
+          (isRoomOwner ? '<span class="tag owner-tag">Host</span>' : '') +
+          (isMe ? '<span class="tag me-tag">Me</span>' : '') +
+          '<span class="row-spacer"></span>' +
+          (isOwner && !isMe ? '<button class="btn btn-xs btn-ghost" onclick="kickMember(\'' + m.userId + '\')">Kick</button>' : '') +
+          '</div>';
+      }).join('');
+    }
+
+    function updateMicButton() {
+      const btn = document.getElementById('micBtn');
+      const icon = document.getElementById('micIcon');
+      const label = document.getElementById('micLabel');
+      const status = document.getElementById('myStatus');
+      if (myRole === 'speaker') {
+        btn.classList.add('on-mic');
+        icon.textContent = '🔴';
+        label.textContent = 'Leave Mic';
+        status.textContent = '🎙️ On air';
+        status.classList.add('on-air');
+      } else {
+        btn.classList.remove('on-mic');
+        icon.textContent = '🎤';
+        label.textContent = 'Go on Mic';
+        status.textContent = '👂 Listening';
+        status.classList.remove('on-air');
+      }
+    }
+
+    // ─── Actions ──────────────────────────────────────────────────────────────
+    document.getElementById('micBtn').addEventListener('click', () => {
+      const role = myRole === 'speaker' ? 'audience' : 'speaker';
+      socket.emit('toggle_mic', { roomId: room.id, role }, (res) => {
+        if (res.status === 'error') toast(res.error, 'error');
+        else { myRole = res.data.memberRole; mySeatIndex = res.data.seatIndex; updateMicButton(); }
+      });
+    });
+
+    function takeSeat(seatIndex) {
+      socket.emit('take_seat', { roomId: room.id, seatIndex }, (res) => {
+        if (res.status === 'error') toast(res.error, 'error');
+        else { myRole = 'speaker'; mySeatIndex = seatIndex; updateMicButton(); refreshSnapshot(); }
+      });
+    }
+
+    document.getElementById('leaveBtn').addEventListener('click', () => {
+      socket.emit('leave_room', { roomId: room.id }, () => {});
+      socket.emit('unsubscribe_room', { roomId: room.id }, () => {});
+      // Keep socket alive — just navigate away
+      window.location.href = 'lobby.html';
+    });
+
+    document.getElementById('closeRoomBtn').addEventListener('click', () => {
+      if (!confirm('Close this room?')) return;
+      socket.emit('close_room', { roomId: room.id }, (res) => {
+        if (res.status === 'error') toast(res.error, 'error');
+      });
+    });
+
+    function kickMember(targetUserId) {
+      socket.emit('kick_member', { roomId: room.id, targetUserId }, (res) => {
+        if (res.status === 'error') toast(res.error, 'error');
+        else { toast('Member kicked'); refreshSnapshot(); }
+      });
+    }
+
+    function kickFromSeat(targetUserId) { kickMember(targetUserId); }
+
+    function toggleLockSeat(seatIndex, currentlyLocked) {
+      fetch('/rooms/' + room.id + '/seats/' + seatIndex + '/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, locked: !currentlyLocked }),
+      }).then(r => r.json()).then(d => {
+        if (!d.success) toast(d.error, 'error');
+        else refreshSnapshot();
+      });
+    }
+
+    function toggleMuteSeat(seatIndex, currentlyEnabled) {
+      fetch('/rooms/' + room.id + '/seats/' + seatIndex + '/mute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, muted: currentlyEnabled }),
+      }).then(r => r.json()).then(d => {
+        if (!d.success) toast(d.error, 'error');
+        else refreshSnapshot();
+      });
+    }
+
+    // ─── Join Requests (owner) ────────────────────────────────────────────────
+    function showJoinRequest(data) {
+      const panel = document.getElementById('joinRequestPanel');
+      const card = document.createElement('div');
+      card.className = 'jr-card';
+      card.id = 'jr-' + data.requestId;
+      card.innerHTML =
+        '<div class="jr-info">' +
+          '<div class="jr-name">' + esc(data.nickname) + '</div>' +
+          '<div class="jr-label">wants to join</div>' +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" onclick="approveRequest(\'' + data.requestId + '\',\'' + esc(data.nickname) + '\')">✓</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="rejectRequest(\'' + data.requestId + '\',\'' + esc(data.nickname) + '\')">✕</button>';
+      panel.appendChild(card);
+    }
+
+    function removeJrCard(requestId) {
+      const el = document.getElementById('jr-' + requestId);
+      if (el) el.remove();
+    }
+
+    async function approveRequest(requestId, nickname) {
+      const res  = await fetch('/rooms/' + room.id + '/join-requests/' + requestId + '/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const data = await res.json();
+      if (data.success) { toast('✅ Approved ' + nickname); removeJrCard(requestId); refreshSnapshot(); }
+      else toast(data.error, 'error');
+    }
+
+    async function rejectRequest(requestId, nickname) {
+      const res  = await fetch('/rooms/' + room.id + '/join-requests/' + requestId + '/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const data = await res.json();
+      if (data.success) { toast('Rejected ' + nickname); removeJrCard(requestId); }
+      else toast(data.error, 'error');
+    }
+
+    // ─── Comments ─────────────────────────────────────────────────────────────
+    let oldestCommentTs = null;
+
+    async function loadComments(reset) {
+      if (reset) oldestCommentTs = null;
+      const url = '/rooms/' + room.id + '/comments?limit=30' + (oldestCommentTs ? '&before=' + oldestCommentTs : '');
+      const res  = await fetch(url);
+      const data = await res.json();
+      if (!data.success) return;
+      const list = document.getElementById('commentList');
+      if (reset || !oldestCommentTs) list.innerHTML = '';
+      const comments = data.data;
+      if (comments.length === 0 && !oldestCommentTs) {
+        list.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem;text-align:center;padding:24px 0">No comments yet</div>';
+        return;
+      }
+      comments.forEach(c => list.appendChild(buildCommentEl(c)));
+      if (comments.length > 0) oldestCommentTs = comments[comments.length - 1].createdAt;
+      list.scrollTop = list.scrollHeight;
+    }
+
+    function buildCommentEl(c) {
+      const isMe = c.userId === user.id;
+      const div = document.createElement('div');
+      div.className = 'comment-item' + (isMe ? ' is-me' : '');
+      div.dataset.id = c.id;
+      const time = new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      div.innerHTML =
+        '<div class="comment-avatar">' + esc(c.nickname[0].toUpperCase()) + '</div>' +
+        '<div class="comment-body">' +
+          (c.parentNickname ? '<div class="comment-reply-to">↩ ' + esc(c.parentNickname) + '</div>' : '') +
+          '<div class="comment-meta">' +
+            '<span class="comment-author' + (isMe ? ' me' : '') + '">' + esc(c.nickname) + '</span>' +
+            '<span class="comment-time">' + time + '</span>' +
+          '</div>' +
+          '<div class="comment-text">' + esc(c.content) + '</div>' +
+          '<button class="btn-reply" onclick="setReply(\'' + c.id + '\',\'' + esc(c.nickname) + '\')">Reply</button>' +
+        '</div>';
+      return div;
+    }
+
+    function appendComment(c) {
+      const list = document.getElementById('commentList');
+      const empty = list.querySelector('[style*="No comments"]');
+      if (empty) empty.remove();
+      list.appendChild(buildCommentEl(c));
+      list.scrollTop = list.scrollHeight;
+    }
+
+    function setReply(commentId, nickname) {
+      replyToId = commentId;
+      replyToNickname = nickname;
+      document.getElementById('replyBannerText').textContent = 'Replying to ' + nickname;
+      document.getElementById('replyBanner').classList.remove('hidden');
+      document.getElementById('commentInput').focus();
+    }
+
+    document.getElementById('cancelReplyBtn').addEventListener('click', () => {
+      replyToId = null; replyToNickname = null;
+      document.getElementById('replyBanner').classList.add('hidden');
+    });
+
+    document.getElementById('sendCommentBtn').addEventListener('click', sendComment);
+    document.getElementById('commentInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendComment();
+    });
+    document.getElementById('commentInput').addEventListener('input', function() {
+      document.getElementById('charCount').textContent = this.value.length + ' / 500';
+    });
+    document.getElementById('refreshComments').addEventListener('click', () => loadComments(true));
+
+    function sendComment() {
+      const input = document.getElementById('commentInput');
+      const content = input.value.trim();
+      if (!content) return;
+      const payload = { content };
+      if (replyToId) payload.parentId = replyToId;
+
+      socket.emit('send_comment', { roomId: room.id, ...payload }, (res) => {
+        if (res.status === 'error') { toast(res.error, 'error'); return; }
+        input.value = '';
+        document.getElementById('charCount').textContent = '0 / 500';
+        if (replyToId) {
+          replyToId = null; replyToNickname = null;
+          document.getElementById('replyBanner').classList.add('hidden');
+        }
+      });
+    }
+  </script>
+</body>
+</html>
