@@ -78,9 +78,19 @@ export function runSqliteMigrations(): void {
       created_at INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS speaker_requests (
+      id         TEXT PRIMARY KEY,
+      room_id    TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      status     TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+      created_at INTEGER NOT NULL,
+      UNIQUE(room_id, user_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_comments_room   ON comments(room_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_join_requests   ON join_requests(room_id, status);
+    CREATE INDEX IF NOT EXISTS idx_speaker_requests ON speaker_requests(room_id, status);
     CREATE INDEX IF NOT EXISTS idx_rooms_status    ON rooms(status, created_at DESC);
   `);
 }
@@ -92,6 +102,7 @@ export function resetSqliteDb(): void {
 
   sqlite.exec(`
     DROP TABLE IF EXISTS join_requests;
+    DROP TABLE IF EXISTS speaker_requests;
     DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS seat_state;
     DROP TABLE IF EXISTS room_members;

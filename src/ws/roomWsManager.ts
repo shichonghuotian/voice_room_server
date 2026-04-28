@@ -156,6 +156,17 @@ class RoomWsManager {
         });
       });
 
+      // ── toggle_mic ────────────────────────────────────────────────────────
+      // Toggles mic_enabled on the speaker's seat (mute/unmute).
+      // `role` param is the caller's identity ('host'|'speaker'), not a target role.
+      socket.on('toggle_mic', ({ roomId, role }: { roomId?: string; role?: string }, cb?: AckCallback) => {
+        handle(cb, async () => {
+          if (!roomId) throw new Error('roomId is required');
+          const result = await roomService.toggleMicEnabled(roomId, userId);
+          return { status: 'ok', data: result };
+        });
+      });
+
       // ── send_comment ──────────────────────────────────────────────────────
       socket.on('send_comment', ({ roomId, content, parentId }: { roomId?: string; content?: string; parentId?: string }, cb?: AckCallback) => {
         handle(cb, async () => {
@@ -172,6 +183,45 @@ class RoomWsManager {
           if (!roomId) throw new Error('roomId is required');
           if (typeof targetUserId !== 'string') throw new Error('targetUserId is required');
           await roomService.kick(roomId, userId, targetUserId);
+          return { status: 'ok' };
+        });
+      });
+
+      // ── force_remove_speaker ──────────────────────────────────────────────
+      socket.on('force_remove_speaker', ({ roomId, targetUserId }: { roomId?: string; targetUserId?: string }, cb?: AckCallback) => {
+        handle(cb, async () => {
+          if (!roomId) throw new Error('roomId is required');
+          if (typeof targetUserId !== 'string') throw new Error('targetUserId is required');
+          await roomService.forceRemoveSpeaker(roomId, userId, targetUserId);
+          return { status: 'ok' };
+        });
+      });
+
+      // ── request_to_speak ──────────────────────────────────────────────────
+      socket.on('request_to_speak', ({ roomId }: { roomId?: string }, cb?: AckCallback) => {
+        handle(cb, async () => {
+          if (!roomId) throw new Error('roomId is required');
+          const result = await roomService.requestToSpeak(roomId, userId);
+          return { status: 'pending', data: { requestId: result.requestId } };
+        });
+      });
+
+      // ── approve_speaker_request ───────────────────────────────────────────
+      socket.on('approve_speaker_request', ({ roomId, requestId }: { roomId?: string; requestId?: string }, cb?: AckCallback) => {
+        handle(cb, async () => {
+          if (!roomId) throw new Error('roomId is required');
+          if (!requestId) throw new Error('requestId is required');
+          await roomService.approveSpeakerRequest(requestId, userId);
+          return { status: 'ok' };
+        });
+      });
+
+      // ── reject_speaker_request ────────────────────────────────────────────
+      socket.on('reject_speaker_request', ({ roomId, requestId }: { roomId?: string; requestId?: string }, cb?: AckCallback) => {
+        handle(cb, async () => {
+          if (!roomId) throw new Error('roomId is required');
+          if (!requestId) throw new Error('requestId is required');
+          await roomService.rejectSpeakerRequest(requestId, userId);
           return { status: 'ok' };
         });
       });

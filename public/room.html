@@ -82,6 +82,20 @@
       position: fixed; top: 64px; right: 16px; z-index: 250;
       display: flex; flex-direction: column; gap: 8px; max-width: 300px;
     }
+    #speakerRequestPanel {
+      position: fixed; top: 64px; right: 16px; z-index: 250;
+      display: flex; flex-direction: column; gap: 8px; max-width: 300px;
+    }
+    .sr-card {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg2); border: 1px solid #fbbf24;
+      border-radius: var(--radius); padding: 10px 14px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      animation: slideIn 0.2s ease;
+    }
+    .sr-info { flex: 1; }
+    .sr-name { font-size: 0.88rem; font-weight: 600; }
+    .sr-label { font-size: 0.73rem; color: var(--text-muted); }
   </style>
 </head>
 <body class="room-page">
@@ -100,6 +114,7 @@
 
   <div id="toast" class="toast hidden"></div>
   <div id="joinRequestPanel"></div>
+  <div id="speakerRequestPanel"></div>
 
   <div class="room-body">
     <!-- Left panel -->
@@ -205,6 +220,9 @@
 
     socket.on('room.snapshot', ({ data }) => {
       snapshot = data;
+      console.log('📸 Snapshot received:', data);
+      console.log('   pendingSpeakerRequests:', data.pendingSpeakerRequests);
+      
       // Sync my role from snapshot
       const mySpkSeat = (data.speakers?.seats || []).find(s => s.userId === user.id);
       if (mySpkSeat) { myRole = 'speaker'; mySeatIndex = mySpkSeat.seatIndex; }
@@ -212,6 +230,19 @@
       updateMicButton();
       renderAll(data);
       loadComments();
+      
+      // Restore pending speaker requests for host
+      if (isOwner && data.pendingSpeakerRequests) {
+        console.log('🏠 Host restoring speaker requests:', data.pendingSpeakerRequests.length);
+        // Clear old speaker request cards
+        const panel = document.getElementById('speakerRequestPanel');
+        panel.innerHTML = '';
+        // Show all pending requests from snapshot
+        data.pendingSpeakerRequests.forEach(req => {
+          console.log('   Adding request:', req);
+          showSpeakerRequest(req);
+        });
+      }
     });
 
     // ─── Server-push events ───────────────────────────────────────────────────
@@ -262,6 +293,23 @@
           break;
         case 'join_rejected':
           toast('❌ Your request was rejected', 'error');
+          break;
+        case 'speaker_request_created':
+          if (isOwner) showSpeakerRequest(data);
+          break;
+        case 'speaker_request_approved':
+          if (data.userId === user.id) {
+            toast('✅ Your speaker request was approved!');
+            myRole = 'speaker';
+            updateMicButton();
+          }
+          refreshSnapshot();
+          break;
+        case 'speaker_request_rejected':
+          if (data.userId === user.id) {
+            toast('❌ Your speaker request was rejected', 'error');
+          }
+          refreshSnapshot();
           break;
         case 'room_closed':
           toast('Room has been closed', 'error');
@@ -377,11 +425,16 @@
 
     // ─── Actions ──────────────────────────────────────────────────────────────
     document.getElementById('micBtn').addEventListener('click', () => {
-      const role = myRole === 'speaker' ? 'audience' : 'speaker';
-      socket.emit('toggle_mic', { roomId: room.id, role }, (res) => {
-        if (res.status === 'error') toast(res.error, 'error');
-        else { myRole = res.data.memberRole; mySeatIndex = res.data.seatIndex; updateMicButton(); }
-      });
+      if (myRole === 'speaker') {
+        // Leave mic
+        socket.emit('leave_seat', { roomId: room.id }, (res) => {
+          if (res.status === 'error') toast(res.error, 'error');
+          else { myRole = 'audience'; mySeatIndex = -1; updateMicButton(); refreshSnapshot(); }
+        });
+      } else {
+        // Request to speak (will auto-promote in public rooms, or send request in private)
+        requestToSpeak();
+      }
     });
 
     function takeSeat(seatIndex) {
@@ -455,6 +508,52 @@
     function removeJrCard(requestId) {
       const el = document.getElementById('jr-' + requestId);
       if (el) el.remove();
+    }
+
+    // ─── Speaker Requests (owner) ─────────────────────────────────────────────
+    function showSpeakerRequest(data) {
+      const panel = document.getElementById('speakerRequestPanel');
+      const card = document.createElement('div');
+      card.className = 'sr-card';
+      card.id = 'sr-' + data.requestId;
+      card.innerHTML =
+        '<div class="sr-info">' +
+          '<div class="sr-name">' + esc(data.nickname) + '</div>' +
+          '<div class="sr-label">wants to speak</div>' +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" onclick="approveSpeakerRequest(\'' + data.requestId + '\',\'' + esc(data.nickname) + '\')">✓</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="rejectSpeakerRequest(\'' + data.requestId + '\',\'' + esc(data.nickname) + '\')">✕</button>';
+      panel.appendChild(card);
+    }
+
+    function removeSrCard(requestId) {
+      const el = document.getElementById('sr-' + requestId);
+      if (el) el.remove();
+    }
+
+    function approveSpeakerRequest(requestId, nickname) {
+      socket.emit('approve_speaker_request', { roomId: room.id, requestId }, (res) => {
+        if (res.status === 'error') toast(res.error, 'error');
+        else { toast('✅ Approved ' + nickname); removeSrCard(requestId); refreshSnapshot(); }
+      });
+    }
+
+    function rejectSpeakerRequest(requestId, nickname) {
+      socket.emit('reject_speaker_request', { roomId: room.id, requestId }, (res) => {
+        if (res.status === 'error') toast(res.error, 'error');
+        else { toast('Rejected ' + nickname); removeSrCard(requestId); }
+      });
+    }
+
+    // ─── Request to Speak (audience) ──────────────────────────────────────────
+    function requestToSpeak() {
+      socket.emit('request_to_speak', { roomId: room.id }, (res) => {
+        if (res.status === 'error') {
+          toast(res.error, 'error');
+        } else if (res.status === 'pending') {
+          toast('⏳ Your speaker request has been sent to the host');
+        }
+      });
     }
 
     async function approveRequest(requestId, nickname) {

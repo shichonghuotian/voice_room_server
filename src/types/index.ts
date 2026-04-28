@@ -34,6 +34,9 @@ export type SseEventType =
   | 'join_rejected'
   | 'seat_locked'
   | 'seat_muted'
+  | 'speaker_request_created'
+  | 'speaker_request_approved'
+  | 'speaker_request_rejected'
   | 'ping';
 
 export interface SseEvent<T = unknown> {
@@ -97,4 +100,25 @@ export interface JoinRejectedPayload {
   requestId: string;
   roomId: string;
   roomName: string;
+}
+
+export interface SpeakerRequestCreatedPayload {
+  requestId: string;
+  roomId: string;
+  userId: string;
+  nickname: string;
+  avatarUrl: string;
+  createdAt: number;
+}
+
+export interface SpeakerRequestApprovedPayload {
+  requestId: string;
+  roomId: string;
+  userId: string;
+}
+
+export interface SpeakerRequestRejectedPayload {
+  requestId: string;
+  roomId: string;
+  userId: string;
 }

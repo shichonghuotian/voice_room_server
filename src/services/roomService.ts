@@ -6,9 +6,11 @@ import {
   roomMembersTable, mysqlRoomMembersTable,
   seatStateTable, mysqlSeatStateTable,
   joinRequestsTable, mysqlJoinRequestsTable,
+  speakerRequestsTable, mysqlSpeakerRequestsTable,
   usersTable, mysqlUsersTable,
   categoriesTable, mysqlCategoriesTable,
-  type Room, type RoomMember, type SeatState, type JoinRequest, type JoinRequestView, type User, type Category,
+  type Room, type RoomMember, type SeatState, type JoinRequest, type JoinRequestView,
+  type SpeakerRequestView, type User, type Category,
 } from '../db/schema';
 import { roomEventBus } from '../realtime/roomEventBus';
 import { roomWsManager } from '../ws/roomWsManager';
@@ -17,12 +19,13 @@ import { seatCache } from './seatCacheService';
 // ─── Table selectors ──────────────────────────────────────────────────────────
 
 const t = {
-  rooms:        () => dbDriver === 'mysql' ? mysqlRoomsTable        : roomsTable,
-  members:      () => dbDriver === 'mysql' ? mysqlRoomMembersTable   : roomMembersTable,
-  seats:        () => dbDriver === 'mysql' ? mysqlSeatStateTable     : seatStateTable,
-  joinRequests: () => dbDriver === 'mysql' ? mysqlJoinRequestsTable  : joinRequestsTable,
-  users:        () => dbDriver === 'mysql' ? mysqlUsersTable         : usersTable,
-  categories:   () => dbDriver === 'mysql' ? mysqlCategoriesTable    : categoriesTable,
+  rooms:           () => dbDriver === 'mysql' ? mysqlRoomsTable           : roomsTable,
+  members:         () => dbDriver === 'mysql' ? mysqlRoomMembersTable      : roomMembersTable,
+  seats:           () => dbDriver === 'mysql' ? mysqlSeatStateTable        : seatStateTable,
+  joinRequests:    () => dbDriver === 'mysql' ? mysqlJoinRequestsTable     : joinRequestsTable,
+  speakerRequests: () => dbDriver === 'mysql' ? mysqlSpeakerRequestsTable  : speakerRequestsTable,
+  users:           () => dbDriver === 'mysql' ? mysqlUsersTable            : usersTable,
+  categories:      () => dbDriver === 'mysql' ? mysqlCategoriesTable       : categoriesTable,
 };
 
 // ─── Row mappers ──────────────────────────────────────────────────────────────
@@ -112,6 +115,7 @@ export interface RoomDetail {
   speakers: { max: number; count: number; seats: RoomSeat[] };
   audience: { max: number; count: number; members: Array<{ userId: string; nickname: string; avatarUrl: string }> };
   onlineCount: number;
+  pendingSpeakerRequests: SpeakerRequestView[];
 }
 
 export interface RoomCard {
@@ -287,7 +291,7 @@ export const roomService = {
     if (!room) return undefined;
     const { db } = getDb();
 
-    const [hostRows, catRows, memberRows, seatRows] = await Promise.all([
+    const [hostRows, catRows, memberRows, seatRows, speakerReqRows] = await Promise.all([
       db.select().from(t.users()).where(eq(t.users().id, room.ownerId)),
       room.categoryId ? db.select().from(t.categories()).where(eq(t.categories().id, room.categoryId)) : Promise.resolve([]),
       db.select({
@@ -296,6 +300,13 @@ export const roomService = {
         nickname: t.users().nickname, avatarUrl: t.users().avatarUrl,
       }).from(t.members()).innerJoin(t.users(), eq(t.members().userId, t.users().id)).where(eq(t.members().roomId, roomId)),
       db.select().from(t.seats()).where(and(eq(t.seats().roomId, roomId), eq(t.seats().status, 'occupied'))),
+      db.select({
+        id: t.speakerRequests().id, roomId: t.speakerRequests().roomId, userId: t.speakerRequests().userId,
+        status: t.speakerRequests().status, createdAt: t.speakerRequests().createdAt,
+        nickname: t.users().nickname, avatarUrl: t.users().avatarUrl,
+      }).from(t.speakerRequests())
+        .innerJoin(t.users(), eq(t.speakerRequests().userId, t.users().id))
+        .where(and(eq(t.speakerRequests().roomId, roomId), eq(t.speakerRequests().status, 'pending'))),
     ]);
 
     const host = hostRows[0] ? toUser(hostRows[0] as Record<string, unknown>) : null;
@@ -316,6 +327,16 @@ export const roomService = {
         isHost: seat.userId === room.ownerId,
       };
     });
+
+    const pendingSpeakerRequests: SpeakerRequestView[] = (speakerReqRows as Record<string, unknown>[]).map(r => ({
+      id: r.id as string,
+      roomId: r.roomId as string,
+      userId: r.userId as string,
+      status: r.status as 'pending',
+      createdAt: Number(r.createdAt),
+      nickname: r.nickname as string,
+      avatarUrl: (r.avatarUrl as string) ?? '',
+    }));
 
     return {
       id: room.id,
@@ -347,6 +368,7 @@ export const roomService = {
         })),
       },
       onlineCount: roomWsManager.getClientCount(roomId),
+      pendingSpeakerRequests,
     };
   },
 
@@ -441,6 +463,54 @@ export const roomService = {
       return this.takeSeat(roomId, userId, idle.seatIndex);
     }
     return this.leaveSeat(roomId, userId);
+  },
+
+  async toggleMicEnabled(roomId: string, userId: string): Promise<{ micEnabled: boolean; seatIndex: number }> {
+    const { db } = getDb();
+
+    // Auto-join if user is the room owner but hasn't joined yet
+    const memberRows = await db.select().from(t.members())
+      .where(and(eq(t.members().roomId, roomId), eq(t.members().userId, userId)));
+    if (!memberRows[0]) {
+      const room = await this.findById(roomId);
+      if (room && room.ownerId === userId) {
+        await this.join(roomId, userId);
+      } else {
+        throw new Error('User is not in this room');
+      }
+    }
+
+    // Re-fetch after potential auto-join
+    const freshMemberRows = await db.select().from(t.members())
+      .where(and(eq(t.members().roomId, roomId), eq(t.members().userId, userId)));
+    const member = toMember(freshMemberRows[0] as Record<string, unknown>);
+    if (member.memberRole !== 'speaker') throw new Error('User is not a speaker');
+
+    const seatRows = await db.select().from(t.seats())
+      .where(and(eq(t.seats().roomId, roomId), eq(t.seats().seatIndex, member.seatIndex)));
+    if (!seatRows[0]) throw new Error('Seat not found');
+    const seat = toSeat(seatRows[0] as Record<string, unknown>);
+
+    const newMicEnabled = !seat.micEnabled;
+    const micEnabledVal = dbDriver === 'mysql' ? (newMicEnabled ? 1 : 0) as unknown as boolean : newMicEnabled;
+    await db.update(t.seats()).set({ micEnabled: micEnabledVal })
+      .where(and(eq(t.seats().roomId, roomId), eq(t.seats().seatIndex, member.seatIndex)));
+
+    seatCache.set(roomId, member.seatIndex, { ...seat, micEnabled: newMicEnabled }).catch(() => {});
+    publish(roomId, 'mic_changed', { userId, seatIndex: member.seatIndex, micEnabled: newMicEnabled, memberRole: 'speaker' });
+
+    return { micEnabled: newMicEnabled, seatIndex: member.seatIndex };
+  },
+
+  async toggleMic(roomId: string, userId: string): Promise<RoomMember> {
+    const { db } = getDb();
+    const memberRows = await db.select().from(t.members())
+      .where(and(eq(t.members().roomId, roomId), eq(t.members().userId, userId)));
+    if (!memberRows[0]) throw new Error('User is not in this room');
+    
+    const member = toMember(memberRows[0] as Record<string, unknown>);
+    const targetRole = member.memberRole === 'speaker' ? 'audience' : 'speaker';
+    return this.changeMic(roomId, userId, targetRole);
   },
 
   // ── Seat Management ──────────────────────────────────────────────────────────
@@ -644,5 +714,129 @@ export const roomService = {
 
     await db.update(t.joinRequests()).set({ status: 'rejected' }).where(eq(t.joinRequests().id, requestId));
     publish(roomId, 'join_rejected', { requestId, roomId, roomName: room.name }, userId);
+  },
+
+  // ── Speaker Requests ──────────────────────────────────────────────────────────
+
+  async requestToSpeak(roomId: string, userId: string): Promise<{ status: 'pending'; requestId: string }> {
+    const room = await this.findById(roomId);
+    if (!room) throw new Error('Room not found');
+    if (room.status === 'closed') throw new Error('Room is closed');
+    const { db } = getDb();
+
+    const memberRows = await db.select().from(t.members())
+      .where(and(eq(t.members().roomId, roomId), eq(t.members().userId, userId)));
+    if (!memberRows[0]) throw new Error('User is not in this room');
+    const member = toMember(memberRows[0] as Record<string, unknown>);
+    if (member.memberRole === 'speaker') throw new Error('User is already a speaker');
+
+    const existing = await db.select().from(t.speakerRequests())
+      .where(and(
+        eq(t.speakerRequests().roomId, roomId),
+        eq(t.speakerRequests().userId, userId),
+        eq(t.speakerRequests().status, 'pending'),
+      ));
+    if (existing[0]) throw new Error('Speaker request already pending');
+
+    const userRows = await db.select().from(t.users()).where(eq(t.users().id, userId));
+    if (!userRows[0]) throw new Error('User not found');
+    const user = toUser(userRows[0] as Record<string, unknown>);
+
+    // Always require approval for speaking
+    const req = { id: uuidv4(), roomId, userId, status: 'pending' as const, createdAt: Date.now() };
+    await db.insert(t.speakerRequests()).values({ ...req });
+
+    publish(roomId, 'speaker_request_created', {
+      requestId: req.id,
+      roomId,
+      userId,
+      nickname: user.nickname,
+      avatarUrl: user.avatarUrl,
+      createdAt: req.createdAt,
+    });
+
+    return { status: 'pending', requestId: req.id };
+  },
+
+  async approveSpeakerRequest(requestId: string, hostId: string): Promise<void> {
+    const { db } = getDb();
+    const reqRows = await db.select().from(t.speakerRequests()).where(eq(t.speakerRequests().id, requestId));
+    if (!reqRows[0]) throw new Error('Speaker request not found');
+    const req = reqRows[0] as Record<string, unknown>;
+    const roomId = req.roomId as string;
+    const userId = req.userId as string;
+
+    const room = await this.findById(roomId);
+    if (!room) throw new Error('Room not found');
+    if (room.status === 'closed') throw new Error('Room is closed');
+    if (room.ownerId !== hostId) throw new Error('Only the host can approve speaker requests');
+    if (req.status !== 'pending') throw new Error('Request is no longer pending');
+
+    await db.delete(t.speakerRequests()).where(eq(t.speakerRequests().id, requestId));
+
+    await this.promoteToSpeaker(roomId, userId);
+
+    publish(roomId, 'speaker_request_approved', { requestId, roomId, userId });
+  },
+
+  async rejectSpeakerRequest(requestId: string, hostId: string): Promise<void> {
+    const { db } = getDb();
+    const reqRows = await db.select().from(t.speakerRequests()).where(eq(t.speakerRequests().id, requestId));
+    if (!reqRows[0]) throw new Error('Speaker request not found');
+    const req = reqRows[0] as Record<string, unknown>;
+    const roomId = req.roomId as string;
+    const userId = req.userId as string;
+
+    const room = await this.findById(roomId);
+    if (!room) throw new Error('Room not found');
+    if (room.ownerId !== hostId) throw new Error('Only the host can reject speaker requests');
+    if (req.status !== 'pending') throw new Error('Request is no longer pending');
+
+    await db.delete(t.speakerRequests()).where(eq(t.speakerRequests().id, requestId));
+
+    publish(roomId, 'speaker_request_rejected', { requestId, roomId, userId });
+  },
+
+  // Promote an audience member to speaker by assigning the next available seat
+  async promoteToSpeaker(roomId: string, userId: string): Promise<RoomMember> {
+    const room = await this.findById(roomId);
+    if (!room) throw new Error('Room not found');
+
+    const seats = await this.listSeats(roomId);
+    const idle = seats.find(s => s.status === 'idle' && s.seatIndex > 0);
+    if (!idle) throw new Error(`Speaker slots are full (max ${room.maxSpeakers})`);
+
+    return this.takeSeat(roomId, userId, idle.seatIndex);
+  },
+
+  // Host forces a speaker to leave the mic
+  async forceRemoveSpeaker(roomId: string, hostId: string, targetUserId: string): Promise<void> {
+    const room = await this.findById(roomId);
+    if (!room) throw new Error('Room not found');
+    if (room.status === 'closed') throw new Error('Room is closed');
+    if (room.ownerId !== hostId) throw new Error('Only the host can remove speakers');
+    if (hostId === targetUserId) throw new Error('Cannot remove yourself');
+    if (targetUserId === room.ownerId) throw new Error('Cannot remove the room owner');
+    const { db } = getDb();
+
+    const memberRows = await db.select().from(t.members())
+      .where(and(eq(t.members().roomId, roomId), eq(t.members().userId, targetUserId)));
+    if (!memberRows[0]) throw new Error('User is not in this room');
+    const member = toMember(memberRows[0] as Record<string, unknown>);
+    if (member.memberRole !== 'speaker') throw new Error('User is not a speaker');
+
+    const userRows = await db.select().from(t.users()).where(eq(t.users().id, targetUserId));
+    const user = toUser(userRows[0] as Record<string, unknown>);
+
+    // Free the seat
+    await db.update(t.seats()).set({ userId: null, nickname: null, status: 'idle' })
+      .where(and(eq(t.seats().roomId, roomId), eq(t.seats().userId, targetUserId)));
+    
+    // Demote to audience
+    await db.update(t.members()).set({ memberRole: 'audience', seatIndex: -1 })
+      .where(and(eq(t.members().roomId, roomId), eq(t.members().userId, targetUserId)));
+
+    if (member.seatIndex >= 0) seatCache.clear(roomId, member.seatIndex).catch(() => {});
+    publish(roomId, 'mic_changed', { userId: targetUserId, nickname: user.nickname, seatIndex: -1, memberRole: 'audience' });
   },
 };

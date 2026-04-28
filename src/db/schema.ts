@@ -69,6 +69,14 @@ export const commentsTable = sqliteTable('comments', {
   createdAt: integer('created_at').notNull(),
 });
 
+export const speakerRequestsTable = sqliteTable('speaker_requests', {
+  id:        text('id').primaryKey(),
+  roomId:    text('room_id').notNull(),
+  userId:    text('user_id').notNull(),
+  status:    text('status', { enum: ['pending', 'approved', 'rejected'] }).notNull().default('pending'),
+  createdAt: integer('created_at').notNull(),
+});
+
 // ─── MySQL tables (production) ────────────────────────────────────────────────
 
 export const mysqlUsersTable = mysqlTable('users', {
@@ -137,6 +145,14 @@ export const mysqlCommentsTable = mysqlTable('comments', {
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 });
 
+export const mysqlSpeakerRequestsTable = mysqlTable('speaker_requests', {
+  id:        varchar('id', { length: 36 }).primaryKey(),
+  roomId:    varchar('room_id', { length: 36 }).notNull(),
+  userId:    varchar('user_id', { length: 36 }).notNull(),
+  status:    mysqlEnum('status', ['pending', 'approved', 'rejected']).notNull().default('pending'),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+});
+
 // ─── Shared TypeScript types ───────────────────────────────────────────────────
 
 export type User = {
@@ -197,6 +213,16 @@ export type JoinRequest = {
 };
 
 export type JoinRequestView = JoinRequest & { nickname: string; avatarUrl: string };
+
+export type SpeakerRequest = {
+  id: string;
+  roomId: string;
+  userId: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: number;
+};
+
+export type SpeakerRequestView = SpeakerRequest & { nickname: string; avatarUrl: string };
 
 export type Comment = {
   id: string;
