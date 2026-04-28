@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+doc/
 
 # Keep SQLite data for server sync
 # data/ and *.db are intentionally tracked
